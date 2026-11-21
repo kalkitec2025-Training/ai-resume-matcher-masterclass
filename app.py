@@ -12,6 +12,7 @@ from pypdf import PdfReader
 load_dotenv()
 
 DB_PATH = "analyzer.db"
+MODELS = ("gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash")
 
 app = FastAPI(title="AI Resume & Job-Match Analyzer")
 
@@ -74,6 +75,33 @@ def save_analysis(filename: str, report: MatchReport) -> None:
     conn.close()
 
 
+def call_gemini(prompt: str) -> MatchReport:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing in .env")
+
+    client = genai.Client(api_key=api_key)
+    last_exc = None
+    for model in MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=MatchReport,
+                ),
+            )
+            return MatchReport.model_validate_json(response.text)
+        except Exception as exc:
+            last_exc = exc
+            # Only fall back on transient overload, quota, or model-not-found errors
+            if not any(code in str(exc) for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED", "404")):
+                break
+
+    raise HTTPException(status_code=502, detail=f"AI analysis failed: {last_exc}")
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "database": "sqlite_connected"}
@@ -84,10 +112,6 @@ def analyze_text(
     resume_text: str = Form(...),
     job_description: str = Form(...),
 ):
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing in .env")
-
     prompt = f"""You are a senior technical recruiter.
 Analyze the candidate's resume text against the target job description objectively.
 
@@ -97,21 +121,9 @@ Analyze the candidate's resume text against the target job description objective
 --- JOB DESCRIPTION ---
 {job_description}
 """
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=MatchReport,
-            ),
-        )
-        report = MatchReport.model_validate_json(response.text)
-        save_analysis("text_input.txt", report)
-        return report
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+    report = call_gemini(prompt)
+    save_analysis("text_input.txt", report)
+    return report
 
 
 @app.post("/analyze-resume", response_model=MatchReport)
@@ -119,12 +131,8 @@ async def analyze_resume(
     resume: UploadFile = File(...),
     job_description: str = Form(...),
 ):
-    if not resume.filename.lower().endswith(".pdf"):
+    if not resume.filename or not resume.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a valid PDF file.")
-
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing in .env")
 
     file_bytes = await resume.read()
     resume_text = extract_pdf_text(file_bytes)
@@ -139,22 +147,9 @@ Be objective, practical, and specific.
 --- JOB DESCRIPTION ---
 {job_description}
 """
-
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=MatchReport,
-            ),
-        )
-        report = MatchReport.model_validate_json(response.text)
-        save_analysis(resume.filename, report)
-        return report
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {exc}")
+    report = call_gemini(prompt)
+    save_analysis(resume.filename, report)
+    return report
 
 
 @app.get("/history")
