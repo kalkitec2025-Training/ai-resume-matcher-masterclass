@@ -100,12 +100,11 @@ Analyze the candidate's resume text against the target job description objective
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=MatchReport,
-                temperature=0.2,
             ),
         )
         report = MatchReport.model_validate_json(response.text)
@@ -144,12 +143,11 @@ Be objective, practical, and specific.
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=MatchReport,
-                temperature=0.2,
             ),
         )
         report = MatchReport.model_validate_json(response.text)
