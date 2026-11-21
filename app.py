@@ -56,10 +56,7 @@ def extract_pdf_text(file_bytes: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(file_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
-        text = "\n".join(pages).strip()
-        if not text:
-            raise ValueError("No readable text found in PDF.")
-        return text
+        return "\n".join(pages).strip()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not read PDF: {exc}")
 
@@ -75,7 +72,7 @@ def save_analysis(filename: str, report: MatchReport) -> None:
     conn.close()
 
 
-def call_gemini(prompt: str) -> MatchReport:
+def call_gemini(contents) -> MatchReport:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is missing in .env")
@@ -86,7 +83,7 @@ def call_gemini(prompt: str) -> MatchReport:
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=MatchReport,
@@ -137,7 +134,8 @@ async def analyze_resume(
     file_bytes = await resume.read()
     resume_text = extract_pdf_text(file_bytes)
 
-    prompt = f"""You are a senior technical recruiter.
+    if resume_text:
+        contents = f"""You are a senior technical recruiter.
 Analyze the candidate's resume against the target job description.
 Be objective, practical, and specific.
 
@@ -147,7 +145,20 @@ Be objective, practical, and specific.
 --- JOB DESCRIPTION ---
 {job_description}
 """
-    report = call_gemini(prompt)
+    else:
+        # Scanned or font-outlined PDF (e.g. WPS/Canva): send raw PDF bytes directly to Gemini
+        contents = [
+            types.Part.from_bytes(data=file_bytes, mime_type="application/pdf"),
+            f"""You are a senior technical recruiter.
+Analyze the attached PDF resume against the target job description.
+Be objective, practical, and specific.
+
+--- JOB DESCRIPTION ---
+{job_description}
+""",
+        ]
+
+    report = call_gemini(contents)
     save_analysis(resume.filename, report)
     return report
 
